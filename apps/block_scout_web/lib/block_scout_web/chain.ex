@@ -496,6 +496,15 @@ defmodule BlockScoutWeb.Chain do
     [paging_options: %{@default_paging_options | key: %{block_index: index}}]
   end
 
+  # Clauses for `Explorer.Chain.Mud`
+  def paging_options(%{"address" => address_hash_string}) do
+    [paging_options: %{@default_paging_options | key: {parse_address_hash(address_hash_string)}}]
+  end
+
+  def paging_options(%{"key" => "0x" <> hex_string}) do
+    [paging_options: %{@default_paging_options | key: {Base.decode16!(hex_string, case: :lower)}}]
+  end
+
   def paging_options(_params), do: [paging_options: @default_paging_options]
 
   def put_key_value_to_paging_options([paging_options: paging_options], key, value) do
@@ -751,6 +760,11 @@ defmodule BlockScoutWeb.Chain do
   # clause for Shibarium Withdrawals
   defp paging_params(%{l2_block_number: block_number}) do
     %{"block_number" => block_number}
+  end
+
+  # clause for Mud worlds
+  defp paging_params(%{address: address}) do
+    %{"address" => address}
   end
 
   @spec paging_params_with_fiat_value(CurrentTokenBalance.t()) :: %{
