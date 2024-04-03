@@ -33,11 +33,11 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
   alias BlockScoutWeb.Models.TransactionStateHelper
   alias Explorer.Chain
   alias Explorer.Chain.Beacon.Reader, as: BeaconReader
-  alias Explorer.Chain.{Hash, Transaction}
-  alias Explorer.Chain.PolygonZkevm.Reader
-  alias Explorer.Chain.ZkSync.Reader
+  alias Explorer.Chain.{Hash, InternalTransaction, Transaction}
+  alias Explorer.Chain.PolygonZkevm.Reader, as: PolygonZkevmReader
+  alias Explorer.Chain.ZkSync.Reader, as: ZkSyncReader
   alias Explorer.Counters.{FreshPendingTransactionsCounter, Transactions24hStats}
-  alias Indexer.Fetcher.FirstTraceOnDemand
+  alias Indexer.Fetcher.OnDemand.FirstTrace, as: FirstTraceOnDemand
 
   action_fallback(BlockScoutWeb.API.V2.FallbackController)
 
@@ -56,6 +56,7 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
                                           :block => :optional,
                                           [created_contract_address: :names] => :optional,
                                           [created_contract_address: :token] => :optional,
+                                          [created_contract_address: :smart_contract] => :optional,
                                           [from_address: :names] => :optional,
                                           [to_address: :names] => :optional,
                                           [to_address: :smart_contract] => :optional
@@ -176,7 +177,7 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
   def polygon_zkevm_batch(conn, %{"batch_number" => batch_number} = _params) do
     transactions =
       batch_number
-      |> Reader.batch_transactions(api?: true)
+      |> PolygonZkevmReader.batch_transactions(api?: true)
       |> Enum.map(fn tx -> tx.hash end)
       |> Chain.hashes_to_transactions(api?: true, necessity_by_association: @transaction_necessity_by_association)
 
@@ -193,18 +194,32 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
     It renders the list of L2 transactions bound to the specified batch.
   """
   @spec zksync_batch(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def zksync_batch(conn, %{"batch_number" => batch_number} = _params) do
-    transactions =
+  def zksync_batch(conn, %{"batch_number" => batch_number} = params) do
+    full_options =
+      [
+        necessity_by_association: @transaction_necessity_by_association
+      ]
+      |> Keyword.merge(paging_options(params))
+      |> Keyword.merge(@api_true)
+
+    # Although a naive way is to implement pagination on the level of `batch_transactions` call,
+    # it will require to re-implement all pagination logic existing in Explorer.Chain.Transaction
+    # In order to simplify the code, all transaction are requested from the batch and then
+    # only subset of them is returned from `hashes_to_transactions`.
+    raw_transactions_list =
       batch_number
-      |> Reader.batch_transactions(api?: true)
+      |> ZkSyncReader.batch_transactions(api?: true)
       |> Enum.map(fn tx -> tx.hash end)
-      |> Chain.hashes_to_transactions(api?: true, necessity_by_association: @transaction_necessity_by_association)
+      |> Chain.hashes_to_transactions(full_options)
+
+    {transactions, next_page} = split_list_by_page(raw_transactions_list)
+    next_page_params = next_page |> next_page_params(transactions, delete_parameters_from_next_page_params(params))
 
     conn
     |> put_status(200)
     |> render(:transactions, %{
       transactions: transactions |> maybe_preload_ens() |> maybe_preload_metadata(),
-      items: true
+      next_page_params: next_page_params
     })
   end
 
@@ -243,7 +258,8 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
         |> put_status(200)
         |> render(:raw_trace, %{internal_transactions: []})
       else
-        internal_transactions = Chain.all_transaction_to_internal_transactions(transaction_hash, @api_true)
+        internal_transactions =
+          InternalTransaction.all_transaction_to_internal_transactions(transaction_hash, @api_true)
 
         first_trace_exists =
           Enum.find_index(internal_transactions, fn trace ->
@@ -307,7 +323,8 @@ defmodule BlockScoutWeb.API.V2.TransactionController do
         |> Keyword.merge(paging_options(params))
         |> Keyword.merge(@api_true)
 
-      internal_transactions_plus_one = Chain.transaction_to_internal_transactions(transaction_hash, full_options)
+      internal_transactions_plus_one =
+        InternalTransaction.transaction_to_internal_transactions(transaction_hash, full_options)
 
       {internal_transactions, next_page} = split_list_by_page(internal_transactions_plus_one)
 
