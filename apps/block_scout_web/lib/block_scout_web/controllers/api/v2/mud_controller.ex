@@ -3,9 +3,11 @@ defmodule BlockScoutWeb.API.V2.MudController do
 
   import BlockScoutWeb.Chain,
     only: [
+      next_page_params: 3,
       next_page_params: 4,
       paging_options: 1,
-      split_list_by_page: 1
+      split_list_by_page: 1,
+      default_paging_options: 0
     ]
 
   import BlockScoutWeb.PagingHelper,
@@ -27,11 +29,13 @@ defmodule BlockScoutWeb.API.V2.MudController do
   def worlds(conn, params) do
     {worlds, next_page} =
       params
-      |> paging_options()
+      |> mud_paging_options(["world"])
       |> Mud.worlds_list()
       |> split_list_by_page()
 
-    next_page_params = next_page_params(next_page, worlds, params)
+    next_page_params = next_page_params(next_page, worlds, params, fn item ->
+      %{"world" => item}
+    end)
 
     conn
     |> put_status(200)
@@ -50,13 +54,23 @@ defmodule BlockScoutWeb.API.V2.MudController do
     |> render(:count, %{count: count})
   end
 
-  def world_tables(conn, %{"world" => world_param} = _params) do
+  def world_tables(conn, %{"world" => world_param} = params) do
     with {:ok, world} <- Chain.string_to_address_hash(world_param) do
-      tables = Mud.world_tables(world)
+
+      options = params |> mud_paging_options(["table_id"])
+
+      {tables, next_page} =
+        world
+        |> Mud.world_tables(options)
+        |> split_list_by_page()
+
+      next_page_params = next_page_params(next_page, tables, params |> Map.drop(["world"]), fn item ->
+        %{"table_id" => item.table_id}
+      end)
 
       conn
       |> put_status(200)
-      |> render(:tables, %{tables: tables})
+      |> render(:tables, %{tables: tables, next_page_params: next_page_params})
     end
   end
 
@@ -72,33 +86,37 @@ defmodule BlockScoutWeb.API.V2.MudController do
 
   def world_table_records(conn, %{"world" => world_param, "table_id" => table_id_param} = params) do
     with {:ok, world} <- Chain.string_to_address_hash(world_param),
-         {:ok, table_id} <- Chain.string_to_transaction_hash(table_id_param),
-         sort_by <- parse_sorting_order(params) do
+         {:ok, table_id} <- Chain.string_to_transaction_hash(table_id_param) do
       options =
         params
-        |> paging_options()
+        |> mud_paging_options(["key_bytes", "key0", "key1"])
+        |> Keyword.merge(mud_records_filter(params))
         |> Keyword.merge(mud_records_sorting(params))
 
-      records_plus_one =
-        Mud.world_table_records(
-          world,
-          table_id,
-          Map.get(params, "filter_key0"),
-          Map.get(params, "filter_key1"),
-          options
-        )
+      {table, records_plus_one} = Mud.world_table_records(world, table_id, options)
 
       {records, next_page} = split_list_by_page(records_plus_one)
 
       next_page_params =
-        next_page_params(next_page, records, params, fn item ->
-          %{"key_bytes" => item.key_bytes, "key0" => item.key0, "key1" => item.key1}
+        next_page_params(next_page, records, params |> Map.drop(["world", "table_id"]), fn item ->
+          keys = [item.raw.key_bytes, item.raw.key0, item.raw.key1]
+          ["key_bytes", "key0", "key1"] |> Enum.zip(keys) |> Enum.into(%{})
         end)
 
       conn
       |> put_status(200)
-      |> render(:records, %{records: records, next_page_params: next_page_params})
+      |> render(:records, %{records: records, table: table, next_page_params: next_page_params})
     end
+  end
+
+  defp mud_records_filter(params) do
+    Enum.reduce(params, [], fn {key, value}, acc ->
+      case key do
+        "filter_key0" -> Keyword.put(acc, :filter_key0, value)
+        "filter_key1" -> Keyword.put(acc, :filter_key1, value)
+        _ -> acc
+      end
+    end)
   end
 
   def world_table_records_count(conn, %{"world" => world_param, "table_id" => table_id_param} = _params) do
@@ -127,28 +145,20 @@ defmodule BlockScoutWeb.API.V2.MudController do
     end
   end
 
-  defp parse_sorting_order(params) do
-    sort =
-      case Map.get(params, "sort") do
-        "desc" -> :desc
-        _ -> :asc
-      end
-
-    sort_by =
-      case Map.get(params, "sort_by") do
-        "key0" -> :key0
-        "key1" -> :key1
-        _ -> :key_bytes
-      end
-
-    {sort, sort_by}
-  end
-
   defp hex_string_to_binary("0x" <> hex) do
     Base.decode16(hex, case: :mixed)
   end
 
   defp hex_string_to_binary(hex) do
     Base.decode16(hex, case: :mixed)
+  end
+
+  def mud_paging_options(params, keys) do
+    key = params |> Map.take(keys) |> Map.to_list() |> Enum.map(&{String.to_atom(elem(&1, 0)), elem(&1, 1)})
+    if key |> Enum.count() == keys |> Enum.count() do
+      [paging_options: %{default_paging_options() | key: key |> Enum.into(%{})}]
+    else
+      [paging_options: default_paging_options()]
+    end
   end
 end

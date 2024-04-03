@@ -26,16 +26,18 @@ defmodule BlockScoutWeb.API.V2.MudView do
   end
 
   @spec render(binary(), map()) :: map() | non_neg_integer()
-  def render("tables.json", %{tables: tables}) do
+  def render("tables.json", %{tables: tables, next_page_params: next_page_params}) do
     %{
-      tables: tables
+      items: tables,
+      next_page_params: next_page_params
     }
   end
 
   @spec render(binary(), map()) :: map() | non_neg_integer()
-  def render("records.json", %{records: records, next_page_params: next_page_params}) do
+  def render("records.json", %{records: records, table: table, next_page_params: next_page_params}) do
     %{
       items: records,
+      table: table,
       next_page_params: next_page_params
     }
   end
