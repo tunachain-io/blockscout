@@ -32,16 +32,19 @@ defmodule Explorer.Chain.Mud.Schema do
   defstruct [:key_schema, :value_schema, :key_names, :value_names]
 
   defimpl Jason.Encoder, for: Explorer.Chain.Mud.Schema do
-    alias Jason.Encode
     alias Explorer.Chain.Mud.Schema
+    alias Jason.Encode
 
     def encode(data, opts) do
-      Encode.map(%{
-        "key_types" => data.key_schema |> Schema.decode_type_names(),
-        "value_types" => data.value_schema |> Schema.decode_type_names(),
-        "key_names" => data.key_names,
-        "value_names" => data.value_names
-      }, opts)
+      Encode.map(
+        %{
+          "key_types" => data.key_schema |> Schema.decode_type_names(),
+          "value_types" => data.value_schema |> Schema.decode_type_names(),
+          "key_names" => data.key_names,
+          "value_names" => data.value_names
+        },
+        opts
+      )
     end
   end
 
@@ -57,6 +60,7 @@ defmodule Explorer.Chain.Mud.Schema do
     types |> Enum.map(&encode_type_name/1)
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp encode_type_name(type) do
     case type do
       _ when type < 32 -> "uint" <> Integer.to_string((type + 1) * 8)

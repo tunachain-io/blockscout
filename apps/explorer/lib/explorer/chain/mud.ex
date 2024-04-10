@@ -6,23 +6,21 @@ defmodule Explorer.Chain.Mud do
 
   import Ecto.Query,
     only: [
-      from: 2,
+      distinct: 2,
+      select: 3,
       where: 3,
-      order_by: 3,
       limit: 2
     ]
-
-  import Explorer.Chain, only: [default_page_size: 0]
 
   alias ABI.{TypeDecoder, TypeEncoder}
   alias Explorer.{Chain, PagingOptions, Repo, SortingHelper}
 
   alias Explorer.Chain.{
+    Data,
+    Hash,
     Mud,
     Mud.Schema,
-    Mud.Schema.FieldSchema,
-    Hash,
-    Data
+    Mud.Schema.FieldSchema
   }
 
   require Logger
@@ -46,9 +44,9 @@ defmodule Explorer.Chain.Mud do
     field(:key_bytes, Data)
     field(:key0, Hash.Full)
     field(:key1, Hash.Full)
-    field(:static_data, :binary)
-    field(:encoded_lengths, :binary)
-    field(:dynamic_data, :binary)
+    field(:static_data, Data)
+    field(:encoded_lengths, Data)
+    field(:dynamic_data, Data)
     field(:is_deleted, :boolean, null: false)
     field(:block_number, :decimal, null: false)
     field(:log_index, :decimal, null: false)
@@ -61,100 +59,66 @@ defmodule Explorer.Chain.Mud do
   def worlds_list(options \\ []) do
     paging_options = Keyword.get(options, :paging_options, Chain.default_paging_options())
 
-    from(r in Mud,
-      select: r.address,
-      distinct: true
-    )
+    Mud
+    |> select([r], r.address)
+    |> distinct(true)
     |> page_worlds(paging_options)
-    |> limit(^(default_page_size() + 1))
+    |> limit(^paging_options.page_size)
     |> Repo.Mud.all()
   end
 
-  defp page_worlds(query, %PagingOptions{key: %{"world" => world}}) do
-    from(item in query, where: item.address > ^world)
+  defp page_worlds(query, %PagingOptions{key: %{world: world}}) do
+    query |> where([item], item.address > ^world)
   end
 
   defp page_worlds(query, _), do: query
 
   def worlds_count do
-    from(r in Mud,
-      select: r.address,
-      distinct: true
-    )
+    Mud
+    |> select([r], r.address)
+    |> distinct(true)
     |> Repo.Mud.aggregate(:count)
+  end
+
+  def world_table_schema(world, table_id) do
+    world_table_schemas(world, [table_id])[table_id]
   end
 
   def world_tables(world, options \\ []) do
     paging_options = Keyword.get(options, :paging_options, Chain.default_paging_options())
+    filter_namespace = Keyword.get(options, :filter_namespace, nil)
 
-    table_ids =
-      from(r in Mud,
-        select: r.table_id,
-        distinct: true,
-        where: r.address == ^world
-      )
-      |> page_tables(paging_options)
-      |> limit(^(default_page_size() + 1))
-      |> Repo.Mud.all()
-
-    schemas = fetch_schemas(world, table_ids)
-
-    table_ids
-    |> Enum.map(fn table_id -> table_id |> decode_table_id() |> Map.put(:schema, schemas[table_id]) end)
+    Mud
+    |> select([r], r.table_id)
+    |> distinct(true)
+    |> where([r], r.address == ^world)
+    |> filter_tables(filter_namespace)
+    |> page_tables(paging_options)
+    |> limit(^paging_options.page_size)
+    |> Repo.Mud.all()
   end
 
-  defp page_tables(query, %PagingOptions{key: %{"table_id" => table_id}}) do
-    from(item in query, where: item.table_id > ^table_id)
+  defp page_tables(query, %PagingOptions{key: %{table_id: table_id}}) do
+    query |> where([item], item.table_id > ^table_id)
   end
 
   defp page_tables(query, _), do: query
 
-  def world_tables_count(world) do
-    from(r in Mud,
-      select: r.table_id,
-      distinct: true,
-      where: r.address == ^world
-    )
+  def world_tables_count(world, options \\ []) do
+    filter_namespace = Keyword.get(options, :filter_namespace, nil)
+
+    Mud
+    |> select([r], r.table_id)
+    |> distinct(true)
+    |> where([r], r.address == ^world)
+    |> filter_tables(filter_namespace)
     |> Repo.Mud.aggregate(:count)
   end
 
-  # def world_namespaces(world, options \\ []) do
-  #   paging_options = Keyword.get(options, :paging_options, Chain.default_paging_options())
+  defp filter_tables(query, nil), do: query
 
-  #   namespaces =
-  #     from(r in
-  #       from(r in Mud,
-  #         select: r.table_id,
-  #         distinct: true,
-  #         where: r.address == ^world
-  #       )
-  #       |> page_namespaces(paging_options),
-  #       select: {fragment("substring(? FROM 2 FOR 14)", r.table_id), fragment("count(*)")},
-  #       group_by: 1
-  #     )
-  #     |> page_namespaces(paging_options)
-  #     |> limit(^(default_page_size() + 1))
-  #     |> Repo.Mud.all()
-
-  #   schemas = fetch_schemas(world, table_ids)
-
-  #   table_ids
-  #   |> Enum.map(fn table_id -> table_id |> decode_table_id() |> Map.put(:schema, schemas[table_id]) end)
-  # end
-
-  # defp page_namespaces(query, %PagingOptions{key: %{"namespace" => table_id}}) do
-  #   from(item in query, where: item.table_id > ^table_id)
-  # end
-
-  # defp page_namespaces(query, _), do: query
-
-  def world_namespaces_count(world) do
-    from(r in Mud,
-      select: r.table_id,
-      distinct: true,
-      where: r.address == ^world
-    )
-    |> Repo.Mud.aggregate(:count)
+  defp filter_tables(query, namespace) do
+    query |> where([tb], fragment("substring(? FROM 3 FOR 14)", tb.table_id) == ^namespace)
   end
 
   @default_sorting [
@@ -165,105 +129,38 @@ defmodule Explorer.Chain.Mud do
     paging_options = Keyword.get(options, :paging_options, Chain.default_paging_options())
     sorting = Keyword.get(options, :sorting, [])
 
-    schema = fetch_schemas(world, [table_id])[table_id]
-
-    IO.inspect(paging_options)
-
-    records =
-      from(r in Mud,
-        where: r.address == ^world and r.table_id == ^table_id
-      )
-      |> apply_filter(:key0, Keyword.get(options, :filter_key0), schema, 0)
-      |> apply_filter(:key1, Keyword.get(options, :filter_key1), schema, 1)
-      |> SortingHelper.apply_sorting(sorting, @default_sorting)
-      |> SortingHelper.page_with_sorting(paging_options, sorting, @default_sorting)
-      |> Repo.Mud.all()
-
-    table = table_id
-    |> decode_table_id()
-    |> Map.put(:schema, schema)
-
-    {table, records |> Enum.map(fn r -> r |> decode_record(schema) |> format_record(r) end)}
+    Mud
+    |> where([r], r.address == ^world and r.table_id == ^table_id)
+    |> filter_records(:key0, Keyword.get(options, :filter_key0))
+    |> filter_records(:key1, Keyword.get(options, :filter_key1))
+    |> SortingHelper.apply_sorting(sorting, @default_sorting)
+    |> SortingHelper.page_with_sorting(paging_options, sorting, @default_sorting)
+    |> Repo.Mud.all()
   end
 
-  def world_table_records_count(world, table_id) do
-    from(r in Mud,
-      where: r.address == ^world and r.table_id == ^table_id
-    )
+  def world_table_records_count(world, table_id, options \\ []) do
+    Mud
+    |> where([r], r.address == ^world and r.table_id == ^table_id)
+    |> filter_records(:key0, Keyword.get(options, :filter_key0))
+    |> filter_records(:key1, Keyword.get(options, :filter_key1))
     |> Repo.Mud.aggregate(:count)
   end
 
+  defp filter_records(query, _key_name, nil), do: query
+
+  defp filter_records(query, :key0, key), do: query |> where([r], r.key0 == ^key)
+
+  defp filter_records(query, :key1, key), do: query |> where([r], r.key1 == ^key)
+
   def world_table_record(world, table_id, record_id) do
-    record =
-      from(r in Mud,
-        where: r.address == ^world and r.table_id == ^table_id and r.key_bytes == ^record_id
-      )
-      |> Repo.Mud.one()
-
-    schema = fetch_schemas(world, [table_id])[table_id]
-
-    table_id
-    |> decode_table_id()
-    |> Map.merge(%{
-      schema: schema,
-      record: record && record |> decode_record(schema) |> format_record(record)
-    })
+    Mud
+    |> where([r], r.address == ^world and r.table_id == ^table_id and r.key_bytes == ^record_id)
+    |> Repo.Mud.one()
   end
 
-  defp apply_filter(query, _key_name, nil, _schema, _field_idx), do: query
-
-  defp apply_filter(query, key_name, key, schema, field_idx) do
-    type_hint = schema && FieldSchema.type_of(schema.key_schema, field_idx)
-
-    key_enc =
-      case key do
-        "false" ->
-          <<0::256>>
-
-        "true" ->
-          <<1::256>>
-
-        "0x" <> hex when type_hint == 97 ->
-          bin = Base.decode16!(hex, case: :mixed)
-          <<0::size(256 - byte_size(bin) * 8), bin::binary>>
-
-        "0x" <> hex ->
-          bin = Base.decode16!(hex, case: :mixed)
-          <<bin::binary, 0::size(256 - byte_size(bin) * 8)>>
-
-        dec ->
-          num = Integer.parse(dec) |> elem(0)
-          <<num::256>>
-      end
-
-    case key_name do
-      :key0 -> query |> where([r], r.key0 == ^key_enc)
-      :key1 -> query |> where([r], r.key1 == ^key_enc)
-    end
-  end
-
-  def format_record(decoded_record, record) do
-    %{
-      id: record.key_bytes,
-      decoded: decoded_record,
-      raw: %{
-        key_bytes: record.key_bytes,
-        key0: record.key0,
-        key1: record.key1,
-        static_data: "0x" <> Base.encode16(record.static_data || <<>>, case: :lower),
-        encoded_lengths: "0x" <> Base.encode16(record.encoded_lengths || <<>>, case: :lower),
-        dynamic_data: "0x" <> Base.encode16(record.dynamic_data || <<>>, case: :lower),
-        block_number: record.block_number,
-        log_index: record.log_index
-      },
-      is_deleted: record.is_deleted
-    }
-  end
-
-  def fetch_schemas(world, table_ids) do
-    from(r in Mud,
-      where: r.address == ^world and r.table_id == ^@store_tables_table_id and r.key0 in ^table_ids
-    )
+  def world_table_schemas(world, table_ids) do
+    Mud
+    |> where([r], r.address == ^world and r.table_id == ^@store_tables_table_id and r.key0 in ^table_ids)
     |> Repo.Mud.all()
     |> Enum.into(%{}, fn r ->
       schema_record = decode_record(r, @store_tables_table_schema)
@@ -282,17 +179,20 @@ defmodule Explorer.Chain.Mud do
   defp decode_abi_encoded_strings("0x" <> hex_encoded) do
     hex_encoded
     |> Base.decode16!(case: :mixed)
-    |> ABI.TypeDecoder.decode_raw([{:array, :string}])
+    |> TypeDecoder.decode_raw([{:array, :string}])
     |> Enum.at(0)
   end
 
-  def decode_record(_record, nil), do: %{}
+  def decode_record(nil, _schema), do: nil
+
+  def decode_record(_record, nil), do: nil
 
   def decode_record(record, schema) do
     key = decode_key_tuple(record.key_bytes.bytes, schema.key_names, schema.key_schema)
+
     value =
       if record.is_deleted do
-        schema.key_names |> Enum.into(%{}, &{&1, nil})
+        schema.value_names |> Enum.into(%{}, &{&1, nil})
       else
         decode_fields(
           record.static_data,
@@ -339,35 +239,34 @@ defmodule Explorer.Chain.Mud do
     res =
       static_fields
       |> Enum.zip(static_types)
-      |> Enum.reduce({%{}, static_data}, fn {field, type}, {acc, data} ->
+      |> Enum.reduce({%{}, (static_data && static_data.bytes) || <<>>}, fn {field, type}, {acc, data} ->
         type_size = static_type_size(type)
         <<enc::binary-size(type_size), rest::binary>> = data
+        decoded = decode_type(type, enc)
+        {Map.put(acc, field, decoded), rest}
+      end)
+      |> elem(0)
+
+    if encoded_lengths == nil or byte_size(encoded_lengths.bytes) == 0 do
+      res
+    else
+      dynamic_type_lengths =
+        encoded_lengths.bytes
+        |> :binary.bin_to_list(0, 25)
+        |> Enum.chunk_every(5)
+        |> Enum.reverse()
+        |> Enum.map(&(&1 |> :binary.list_to_bin() |> :binary.decode_unsigned()))
+
+      [dynamic_fields, dynamic_types, dynamic_type_lengths]
+      |> Enum.zip()
+      |> Enum.reduce({res, (dynamic_data && dynamic_data.bytes) || <<>>}, fn {field, type, length}, {acc, data} ->
+        <<enc::binary-size(length), rest::binary>> = data
         decoded = decode_type(type, enc)
 
         {Map.put(acc, field, decoded), rest}
       end)
       |> elem(0)
-
-    dynamic_type_lengths =
-      if encoded_lengths == nil or byte_size(encoded_lengths) == 0 do
-        []
-      else
-        encoded_lengths
-        |> :binary.bin_to_list(0, 25)
-        |> Enum.chunk_every(5)
-        |> Enum.reverse()
-        |> Enum.map(&(&1 |> :binary.list_to_bin() |> :binary.decode_unsigned()))
-      end
-
-    [dynamic_fields, dynamic_types, dynamic_type_lengths]
-    |> Enum.zip()
-    |> Enum.reduce({res, dynamic_data}, fn {field, type, length}, {acc, data} ->
-      <<enc::binary-size(length), rest::binary>> = data
-      decoded = decode_type(type, enc)
-
-      {Map.put(acc, field, decoded), rest}
-    end)
-    |> elem(0)
+    end
   end
 
   def static_type_size(type) do
@@ -378,6 +277,7 @@ defmodule Explorer.Chain.Mud do
     end
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def decode_type(type, raw) do
     case type do
       _ when type < 32 ->
@@ -406,34 +306,5 @@ defmodule Explorer.Chain.Mud do
       _ ->
         raise "Unknown type: #{type}"
     end
-  end
-
-  defp decode_table_id(%Hash{byte_count: 32, bytes: raw} = table_id) do
-    <<prefix::binary-size(2), namespace::binary-size(14), table_name::binary-size(16)>> = raw
-
-    trimmed_namespace = String.trim_trailing(namespace, "\u0000")
-    trimmed_table_name = String.trim_trailing(table_name, "\u0000")
-
-    table_full_name =
-      if String.length(trimmed_namespace) > 0 do
-        prefix <> "." <> trimmed_namespace <> "." <> trimmed_table_name
-      else
-        prefix <> "." <> trimmed_table_name
-      end
-
-    table_type =
-      case prefix do
-        "ot" -> "offchain"
-        "tb" -> "onchain"
-        _ -> "unknown"
-      end
-
-    %{
-      table_id: table_id,
-      table_full_name: table_full_name,
-      table_type: table_type,
-      table_namespace: trimmed_namespace,
-      table_name: trimmed_table_name
-    }
   end
 end
